@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>emcache — Conectar Contas (Pluggy)</title>
+  <script src="https://cdn.pluggy.ai/pluggy-connect/v2.5.0/pluggy-connect.js"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #22c55e;
+      --danger: #ef4444;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 2rem 1rem;
+    }
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    h1 { margin: 0; font-size: 1.5rem; }
+    h2 { font-size: 1.1rem; margin: 0 0 1rem; }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.65rem 1.2rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover); }
+    button.secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.8rem;
+      font-size: 0.85rem;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    #status {
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.6rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 600; }
+    .credit { color: var(--success); }
+    .debit { color: var(--danger); }
+    .empty { color: var(--muted); font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>emcache • Open Finance (Pluggy)</h1>
+        <div id="status">Conecte suas contas para importar saldos e transações automaticamente.</div>
+      </div>
+      <div>
+        <button id="btn-connect">+ Conectar Conta Bancária</button>
+      </div>
+    </header>
+
+    <div class="card">
+      <h2>Conexões (Items)</h2>
+      <div id="items-list" class="empty">Carregando...</div>
+    </div>
+
+    <div class="card">
+      <h2>Contas Bancárias &amp; Cartões</h2>
+      <div id="accounts-list" class="empty">Carregando...</div>
+    </div>
+
+    <div class="card">
+      <h2>Últimas Transações Importadas</h2>
+      <div id="transactions-list" class="empty">Carregando...</div>
+    </div>
+  </div>
+
+  <script>
+    const INCLUDE_SANDBOX = __INCLUDE_SANDBOX__;
+    const statusEl = document.getElementById("status");
+
+    function setStatus(msg) {
+      statusEl.textContent = msg;
+    }
+
+    function formatBRL(cents, currency = "BRL") {
+      return new Intl.NumberFormat("pt-BR", {
+        style: "currency",
+        currency: currency || "BRL",
+      }).format((cents || 0) / 100);
+    }
+
+    async function syncItem(itemId) {
+      setStatus(`Sincronizando item ${itemId}...`);
+      const res = await fetch(`/api/pluggy/items/${itemId}/sync`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus(`Erro ao sincronizar: ${data.detail || res.statusText}`);
+        return;
+      }
+      setStatus(
+        `Sincronizado (${data.connector || itemId}): ${data.accounts_synced} conta(s), ${data.transactions_synced} transação(ões).`
+      );
+      await loadAll();
+    }
+
+    async function loadItems() {
+      const res = await fetch("/api/pluggy/items");
+      const { results } = await res.json();
+      const el = document.getElementById("items-list");
+      if (!results.length) {
+        el.innerHTML = '<span class="empty">Nenhuma conta conectada ainda.</span>';
+        return;
+      }
+      el.innerHTML = `
+        <table>
+          <thead><tr><th>Instituição</th><th>Item ID</th><th>Status</th><th>Última Atualização</th><th></th></tr></thead>
+          <tbody>
+            ${results.map(item => `
+              <tr>
+                <td>${item.connector_name || "-"}</td>
+                <td><code>${item.pluggy_item_id}</code></td>
+                <td>${item.status}</td>
+                <td>${item.last_updated_at ? new Date(item.last_updated_at).toLocaleString("pt-BR") : "-"}</td>
+                <td><button class="secondary" onclick="syncItem('${item.pluggy_item_id}')">Sincronizar</button></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async function loadAccounts() {
+      const res = await fetch("/api/pluggy/accounts");
+      const { results } = await res.json();
+      const el = document.getElementById("accounts-list");
+      if (!results.length) {
+        el.innerHTML = '<span class="empty">Nenhuma conta sincronizada.</span>';
+        return;
+      }
+      el.innerHTML = `
+        <table>
+          <thead><tr><th>Instituição</th><th>Conta</th><th>Tipo</th><th>Saldo</th></tr></thead>
+          <tbody>
+            ${results.map(acc => `
+              <tr>
+                <td>${acc.connector_name || "-"}</td>
+                <td>${acc.name || acc.number || acc.pluggy_account_id}</td>
+                <td>${acc.subtype || acc.type}</td>
+                <td>${formatBRL(acc.balance_cents, acc.currency_code)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async function loadTransactions() {
+      const res = await fetch("/api/pluggy/transactions?limit=30");
+      const { results } = await res.json();
+      const el = document.getElementById("transactions-list");
+      if (!results.length) {
+        el.innerHTML = '<span class="empty">Nenhuma transação importada.</span>';
+        return;
+      }
+      el.innerHTML = `
+        <table>
+          <thead><tr><th>Data</th><th>Instituição / Conta</th><th>Descrição</th><th>Categoria</th><th>Valor</th></tr></thead>
+          <tbody>
+            ${results.map(tx => `
+              <tr>
+                <td>${new Date(tx.date).toLocaleDateString("pt-BR")}</td>
+                <td>${tx.connector_name || "-"} • ${tx.account_name || ""}</td>
+                <td>${tx.description}</td>
+                <td>${tx.category || "-"}</td>
+                <td class="${tx.type === "CREDIT" ? "credit" : "debit"}">${formatBRL(tx.amount_cents, tx.currency_code)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async function loadAll() {
+      await Promise.all([loadItems(), loadAccounts(), loadTransactions()]);
+    }
+
+    document.getElementById("btn-connect").addEventListener("click", async () => {
+      try {
+        setStatus("Gerando Connect Token...");
+        const res = await fetch("/api/pluggy/connect-token", { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) {
+          setStatus(`Erro: ${data.detail || "Não foi possível gerar o Connect Token."}`);
+          return;
+        }
+
+        const pluggyConnect = new PluggyConnect({
+          connectToken: data.accessToken,
+          includeSandbox: INCLUDE_SANDBOX,
+          onSuccess: async (itemData) => {
+            const itemId = itemData.item.id;
+            setStatus(`Conta conectada (${itemId}). Iniciando importação...`);
+            await fetch("/api/pluggy/items", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ itemId }),
+            });
+            await syncItem(itemId);
+          },
+          onError: (err) => {
+            setStatus(`Erro na conexão: ${err.message || JSON.stringify(err)}`);
+          },
+          onClose: () => {
+            setStatus("Widget fechado.");
+          },
+        });
+
+        pluggyConnect.init();
+      } catch (err) {
+        setStatus(`Falha inesperada: ${err.message}`);
+      }
+    });
+
+    loadAll();
+  </script>
+</body>
+</html>
