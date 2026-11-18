@@ -129,35 +129,41 @@ class PluggyClient:
         *,
         date_from: str | None = None,
         date_to: str | None = None,
-        page_size: int = 100,
     ) -> list[dict[str, Any]]:
-        """Fetch all transactions for an account handling Pluggy pagination."""
+        """Fetch all transactions for an account using Pluggy v2 cursor pagination."""
         all_results: list[dict[str, Any]] = []
-        page = 1
+        after: str | None = None
+        next_url: str | None = None
 
         while True:
-            params: dict[str, Any] = {
-                "accountId": account_id,
-                "page": page,
-                "pageSize": page_size,
-            }
-            if date_from:
-                params["from"] = date_from
-            if date_to:
-                params["to"] = date_to
+            if next_url:
+                data = await self._request("GET", next_url)
+            else:
+                params: dict[str, Any] = {
+                    "accountId": account_id,
+                }
+                if date_from:
+                    params["from"] = date_from
+                if date_to:
+                    params["to"] = date_to
+                if after:
+                    params["after"] = after
+                data = await self._request("GET", "/v2/transactions", params=params)
 
-            data = await self._request("GET", "/transactions", params=params)
             results = data.get("results", [])
             all_results.extend(results)
 
-            total_pages = data.get("totalPages")
-            if total_pages is not None:
-                if page >= total_pages:
-                    break
-            elif len(results) < page_size:
+            next_token = data.get("next")
+            if not next_token or not results:
                 break
 
-            page += 1
+            if isinstance(next_token, str) and (
+                next_token.startswith("http://") or next_token.startswith("https://")
+            ):
+                next_url = next_token
+            else:
+                next_url = None
+                after = next_token
 
         return all_results
 
