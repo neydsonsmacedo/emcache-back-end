@@ -80,7 +80,7 @@ async def handle_webhook_event(payload: dict[str, Any]) -> None:
             if item_id:
                 await db.delete_item_cascade(item_id)
         elif event == "transactions/created":
-            link = payload.get("createdTransactionsLink")
+            link = payload.get("createdTransactionsLinkV2") or payload.get("createdTransactionsLink")
             if link:
                 txs = await pluggy_client.get_transactions_by_link(link)
                 await _persist_transactions_batch(txs, fallback_item_id=item_id)
