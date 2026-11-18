@@ -116,6 +116,10 @@ class PluggyClient:
     async def get_item(self, item_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/items/{item_id}")
 
+    async def update_item(self, item_id: str) -> dict[str, Any]:
+        """Trigger an on-demand sync of an Item with the financial institution."""
+        return await self._request("PATCH", f"/items/{item_id}", json={})
+
     async def delete_item(self, item_id: str) -> None:
         await self._request("DELETE", f"/items/{item_id}")
 

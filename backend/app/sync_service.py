@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import time
 from collections import defaultdict
 from typing import Any
 
@@ -33,6 +35,55 @@ async def sync_full_item(item_id: str, date_from: str | None = None) -> dict[str
         "status": item.get("status"),
         "accounts_synced": len(accounts),
         "transactions_synced": total_transactions,
+    }
+
+
+TERMINAL_ITEM_STATUSES = {
+    "UPDATED",
+    "LOGIN_ERROR",
+    "INVALID_CREDENTIALS",
+    "WAITING_USER_INPUT",
+    "OUTDATED",
+}
+
+
+async def refresh_item(
+    item_id: str,
+    *,
+    wait: bool = False,
+    timeout_seconds: int = 60,
+    poll_interval_seconds: float = 2.0,
+) -> dict[str, Any]:
+    """Trigger Pluggy to re-fetch from the bank, optionally waiting to sync to DB."""
+    item = await pluggy_client.update_item(item_id)
+    await db.upsert_item(item)
+
+    if not wait:
+        return {
+            "item_id": item_id,
+            "connector": (item.get("connector") or {}).get("name"),
+            "status": item.get("status"),
+            "execution_status": item.get("executionStatus"),
+            "synced": False,
+        }
+
+    deadline = time.monotonic() + timeout_seconds
+    while item.get("status") not in TERMINAL_ITEM_STATUSES and time.monotonic() < deadline:
+        await asyncio.sleep(poll_interval_seconds)
+        item = await pluggy_client.get_item(item_id)
+        await db.upsert_item(item)
+
+    if item.get("status") == "UPDATED":
+        result = await sync_full_item(item_id)
+        result["synced"] = True
+        return result
+
+    return {
+        "item_id": item_id,
+        "connector": (item.get("connector") or {}).get("name"),
+        "status": item.get("status"),
+        "execution_status": item.get("executionStatus"),
+        "synced": False,
     }
 
 

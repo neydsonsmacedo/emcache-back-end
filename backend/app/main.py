@@ -1,21 +1,16 @@
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app import db, sync_service
-from app.config import settings
 from app.pluggy_client import PluggyNotConfiguredError, pluggy_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("emcache.api")
-
-STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -47,17 +42,6 @@ class RegisterItemRequest(BaseModel):
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-@app.get("/connect", response_class=HTMLResponse)
-async def connect_page() -> HTMLResponse:
-    html_path = STATIC_DIR / "connect.html"
-    content = html_path.read_text(encoding="utf-8")
-    content = content.replace(
-        "__INCLUDE_SANDBOX__",
-        "true" if settings.pluggy_include_sandbox else "false",
-    )
-    return HTMLResponse(content=content)
 
 
 @app.post("/api/pluggy/connect-token")
@@ -116,6 +100,26 @@ async def sync_item(
     """Manually trigger full sync of an item (item, accounts, transactions)."""
     try:
         return await sync_service.sync_full_item(item_id, date_from=date_from)
+    except PluggyNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=f"Erro da Pluggy: {exc.response.text}",
+        ) from exc
+
+
+@app.post("/api/pluggy/items/{item_id}/refresh")
+async def refresh_item(
+    item_id: str,
+    wait: bool = Query(
+        default=False,
+        description="Aguardar Pluggy concluir a coleta no banco e sincronizar no DB",
+    ),
+) -> dict[str, Any]:
+    """Trigger Pluggy to re-fetch fresh data from the financial institution."""
+    try:
+        return await sync_service.refresh_item(item_id, wait=wait)
     except PluggyNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except httpx.HTTPStatusError as exc:
