@@ -129,6 +129,28 @@ async def refresh_item(
         ) from exc
 
 
+@app.get("/api/institutions")
+async def get_institutions() -> dict[str, Any]:
+    institutions = await db.list_institutions()
+    return {"results": institutions}
+
+
+@app.get("/api/transactions")
+async def get_unified_transactions(
+    institution_id: str | None = None,
+    source: str | None = Query(default=None, pattern="^(pluggy|manual)$"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    transactions = await db.list_unified_transactions(
+        institution_id=institution_id,
+        source=source,
+        limit=limit,
+        offset=offset,
+    )
+    return {"results": transactions}
+
+
 @app.get("/api/pluggy/items")
 async def get_items() -> dict[str, Any]:
     items = await db.list_items()
