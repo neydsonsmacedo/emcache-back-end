@@ -10,19 +10,26 @@ from app.pluggy_client import pluggy_client
 logger = logging.getLogger("emcache.sync")
 
 
-async def sync_item_and_accounts(item_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+async def sync_item_and_accounts(
+    item_id: str,
+    user_id: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Fetch an Item and its Accounts from Pluggy and persist them."""
     item = await pluggy_client.get_item(item_id)
-    await db.upsert_item(item)
+    await db.upsert_item(item, user_id=user_id)
 
     accounts = await pluggy_client.list_accounts(item_id)
     await db.upsert_accounts(item_id, accounts)
     return item, accounts
 
 
-async def sync_full_item(item_id: str, date_from: str | None = None) -> dict[str, Any]:
+async def sync_full_item(
+    item_id: str,
+    date_from: str | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     """Sync Item metadata, all Accounts, and all paginated Transactions."""
-    item, accounts = await sync_item_and_accounts(item_id)
+    item, accounts = await sync_item_and_accounts(item_id, user_id=user_id)
 
     total_transactions = 0
     for acc in accounts:

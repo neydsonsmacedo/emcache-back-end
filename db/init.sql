@@ -1,6 +1,30 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ============================================================================
+-- Usuários e Identidades de Canal (Web, Telegram, etc.)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(150),
+    email VARCHAR(255) UNIQUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_identities (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel VARCHAR(30) NOT NULL,                       -- 'telegram' | 'web'
+    external_id VARCHAR(150) NOT NULL,                  -- ex: telegram_chat_id
+    username VARCHAR(150),
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (channel, external_id)
+);
+
+-- ============================================================================
 -- Dimensão de Instituições Financeiras / Origens
 -- ============================================================================
 
@@ -29,6 +53,7 @@ ON CONFLICT (slug) DO NOTHING;
 CREATE TABLE IF NOT EXISTS pluggy_items (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     pluggy_item_id VARCHAR(100) UNIQUE NOT NULL,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     institution_id UUID REFERENCES institutions(id) ON DELETE SET NULL,
     connector_id INTEGER,
     connector_name VARCHAR(150),
@@ -86,6 +111,7 @@ CREATE TABLE IF NOT EXISTS pluggy_transactions (
 
 CREATE TABLE IF NOT EXISTS manual_transactions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
 
     -- Dados da transação
     data DATE,                                      -- 'YYYY-MM-DD' ou NULL
@@ -110,21 +136,67 @@ CREATE TABLE IF NOT EXISTS manual_transactions (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities (user_id, channel);
+CREATE INDEX IF NOT EXISTS idx_pluggy_items_user ON pluggy_items (user_id);
+CREATE INDEX IF NOT EXISTS idx_pluggy_items_client_user ON pluggy_items (client_user_id);
 CREATE INDEX IF NOT EXISTS idx_pluggy_items_institution ON pluggy_items (institution_id);
 CREATE INDEX IF NOT EXISTS idx_pluggy_accounts_item ON pluggy_accounts (pluggy_item_id);
 CREATE INDEX IF NOT EXISTS idx_pluggy_transactions_date ON pluggy_transactions (date DESC);
 CREATE INDEX IF NOT EXISTS idx_pluggy_transactions_account ON pluggy_transactions (pluggy_account_id);
+CREATE INDEX IF NOT EXISTS idx_manual_transactions_user ON manual_transactions (user_id);
 CREATE INDEX IF NOT EXISTS idx_manual_transactions_data ON manual_transactions (data DESC);
 CREATE INDEX IF NOT EXISTS idx_manual_transactions_institution ON manual_transactions (institution_id);
 CREATE INDEX IF NOT EXISTS idx_manual_transactions_status ON manual_transactions (status);
 
 -- ============================================================================
+-- Sessões e Mensagens de Chat (Web e Telegram)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel VARCHAR(30) NOT NULL,                       -- 'web' | 'telegram'
+    external_session_id VARCHAR(150),
+    pending_transaction_id UUID REFERENCES manual_transactions(id) ON DELETE SET NULL,
+    context JSONB DEFAULT '{}'::jsonb,
+    last_message_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_sessions_user_channel_ext
+    ON chat_sessions (user_id, channel, external_session_id)
+    WHERE external_session_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_sessions_user_channel_default
+    ON chat_sessions (user_id, channel)
+    WHERE external_session_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions (user_id, last_message_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL,                          -- 'user' | 'assistant' | 'system' | 'tool'
+    content TEXT NOT NULL,
+    channel VARCHAR(30) NOT NULL,                       -- 'web' | 'telegram'
+    input_type VARCHAR(20) NOT NULL DEFAULT 'text',     -- 'text' | 'audio' | 'image'
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages (session_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages (user_id, created_at DESC);
+
+-- ============================================================================
 -- Visão Unificada (Pluggy + Manuais completas e não conciliadas)
 -- ============================================================================
 
-CREATE OR REPLACE VIEW unified_transactions AS
+DROP VIEW IF EXISTS unified_transactions;
+
+CREATE VIEW unified_transactions AS
 SELECT
     pt.id::TEXT AS id,
+    pi.user_id,
     'pluggy'::VARCHAR(20) AS source,
     pt.date AS occurred_at,
     pt.date::DATE AS transaction_date,
@@ -151,6 +223,7 @@ UNION ALL
 
 SELECT
     mt.id::TEXT AS id,
+    mt.user_id,
     'manual'::VARCHAR(20) AS source,
     COALESCE(mt.data::TIMESTAMPTZ, mt.created_at) AS occurred_at,
     COALESCE(mt.data, mt.created_at::DATE) AS transaction_date,
