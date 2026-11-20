@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     pluggy_webhook_url: str = ""
     pluggy_include_sandbox: bool = True
 
+    llm_provider: str = "openai"
+    llm_api_key: str = ""
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_model: str = "gpt-4o-mini"
+    transcription_model: str = "whisper-1"
+    vision_model: str = "gpt-4o-mini"
+
+    telegram_bot_token: str = ""
+    telegram_webhook_secret: str = ""
+
     @property
     def database_url(self) -> str:
         return (
