@@ -18,14 +18,22 @@ async def _run_command(args: argparse.Namespace) -> int:
     await db.pool.open(wait=True)
     await db.init_pluggy_schema()
     try:
+        if args.command in {"register", "sync"} and args.user_id:
+            user = await db.get_user(args.user_id)
+            if not user:
+                print(f"User not found: {args.user_id}", file=sys.stderr)
+                return 4
+
         if args.command == "register":
-            result = await sync_service.sync_full_item(args.item_id)
+            result = await sync_service.sync_full_item(
+                args.item_id, user_id=args.user_id
+            )
             _print_json(result)
             return 0
 
         if args.command == "sync":
             result = await sync_service.sync_full_item(
-                args.item_id, date_from=args.date_from
+                args.item_id, date_from=args.date_from, user_id=args.user_id
             )
             _print_json(result)
             return 0
@@ -40,7 +48,7 @@ async def _run_command(args: argparse.Namespace) -> int:
             return 0
 
         if args.command == "status":
-            items = await db.list_items()
+            items = await db.list_items(user_id=args.user_id)
             _print_json({"results": items})
             return 0
 
@@ -70,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         "register", help="Register an existing Pluggy itemId and run initial sync."
     )
     p_register.add_argument("item_id", help="Pluggy item ID from the Pluggy Dashboard")
+    p_register.add_argument(
+        "--user-id",
+        dest="user_id",
+        default=None,
+        help="Optional user UUID to link this Pluggy item to",
+    )
 
     p_sync = sub.add_parser(
         "sync", help="Pull latest accounts and transactions from Pluggy into Postgres."
@@ -80,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="date_from",
         default=None,
         help="Optional start date (YYYY-MM-DD)",
+    )
+    p_sync.add_argument(
+        "--user-id",
+        dest="user_id",
+        default=None,
+        help="Optional user UUID to link this Pluggy item to",
     )
 
     p_refresh = sub.add_parser(
@@ -99,7 +119,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max seconds to wait for UPDATED when polling (default: 60).",
     )
 
-    sub.add_parser("status", help="List all registered items and their sync status.")
+    p_status = sub.add_parser("status", help="List all registered items and their sync status.")
+    p_status.add_argument(
+        "--user-id",
+        dest="user_id",
+        default=None,
+        help="Optional user UUID to filter items",
+    )
     return parser
 
 

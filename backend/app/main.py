@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
+from uuid import UUID
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
@@ -137,12 +138,14 @@ async def get_institutions() -> dict[str, Any]:
 
 @app.get("/api/transactions")
 async def get_unified_transactions(
-    institution_id: str | None = None,
+    user_id: UUID | None = None,
+    institution_id: UUID | None = None,
     source: str | None = Query(default=None, pattern="^(pluggy|manual)$"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     transactions = await db.list_unified_transactions(
+        user_id=user_id,
         institution_id=institution_id,
         source=source,
         limit=limit,
@@ -152,14 +155,17 @@ async def get_unified_transactions(
 
 
 @app.get("/api/pluggy/items")
-async def get_items() -> dict[str, Any]:
-    items = await db.list_items()
+async def get_items(user_id: UUID | None = None) -> dict[str, Any]:
+    items = await db.list_items(user_id=user_id)
     return {"results": items}
 
 
 @app.get("/api/pluggy/accounts")
-async def get_accounts(item_id: str | None = None) -> dict[str, Any]:
-    accounts = await db.list_accounts(item_id=item_id)
+async def get_accounts(
+    item_id: str | None = None,
+    user_id: UUID | None = None,
+) -> dict[str, Any]:
+    accounts = await db.list_accounts(item_id=item_id, user_id=user_id)
     return {"results": accounts}
 
 
@@ -167,12 +173,14 @@ async def get_accounts(item_id: str | None = None) -> dict[str, Any]:
 async def get_transactions(
     account_id: str | None = None,
     item_id: str | None = None,
+    user_id: UUID | None = None,
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     transactions = await db.list_transactions(
         account_id=account_id,
         item_id=item_id,
+        user_id=user_id,
         limit=limit,
         offset=offset,
     )

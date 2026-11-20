@@ -41,12 +41,20 @@ services:
       PLUGGY_CLIENT_SECRET: ${PLUGGY_CLIENT_SECRET:-}
       PLUGGY_WEBHOOK_URL: ${PLUGGY_WEBHOOK_URL:-}
       PLUGGY_INCLUDE_SANDBOX: ${PLUGGY_INCLUDE_SANDBOX:-true}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      TRANSCRIPTION_MODEL: ${TRANSCRIPTION_MODEL:-whisper-1}
+      VISION_MODEL: ${VISION_MODEL:-gpt-4o-mini}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
 
 volumes:
   pgdata:
