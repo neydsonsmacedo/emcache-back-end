@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import Any
@@ -8,7 +9,17 @@ import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app import db, financial_service, reconcile_service, sync_service
+from app import (
+    db,
+    financial_service,
+    llm_client,
+    llm_registry,
+    metrics_service,
+    reconcile_service,
+    sync_service,
+)
+from app.chat_api import router as chat_router
+from app.llm_metrics import LLMMetricsCallbackHandler, MetricsRecorder
 from app.pluggy_client import PluggyNotConfiguredError, pluggy_client
 
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +41,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.include_router(chat_router)
 
 
 class ConnectTokenRequest(BaseModel):
@@ -491,3 +504,143 @@ async def unreconcile_manual_transaction(
     if not row:
         raise HTTPException(status_code=404, detail="Transação manual não encontrada")
     return row
+
+
+# ---------------------------------------------------------------------------
+# LLM provider configs (fallback chain) and usage metrics
+# ---------------------------------------------------------------------------
+
+
+class LLMConfigCreateRequest(BaseModel):
+    user_id: UUID
+    name: str = Field(min_length=1, max_length=80)
+    provider: str = Field(min_length=1, max_length=30)
+    base_url: str = Field(min_length=1)
+    api_key: str = Field(min_length=1)
+    chat_model: str = Field(min_length=1)
+    vision_model: str | None = None
+    transcription_model: str | None = None
+    priority: int = Field(default=1, ge=1, le=100)
+    is_active: bool = True
+
+
+class LLMConfigUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    provider: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    chat_model: str | None = None
+    vision_model: str | None = None
+    transcription_model: str | None = None
+    priority: int | None = Field(default=None, ge=1, le=100)
+    is_active: bool | None = None
+
+
+@app.get("/api/llm/configs")
+async def list_llm_configs(user_id: UUID) -> dict[str, Any]:
+    return {"results": await llm_registry.list_configs(user_id)}
+
+
+@app.post("/api/llm/configs", status_code=201)
+async def create_llm_config(payload: LLMConfigCreateRequest) -> dict[str, Any]:
+    try:
+        return await llm_registry.create_config(**payload.model_dump())
+    except llm_registry.LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/llm/configs/{config_id}")
+async def update_llm_config(
+    config_id: UUID, user_id: UUID, payload: LLMConfigUpdateRequest
+) -> dict[str, Any]:
+    try:
+        row = await llm_registry.update_config(
+            config_id, user_id, payload.model_dump(exclude_unset=True)
+        )
+    except llm_registry.LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="Configuração não encontrada")
+    return row
+
+
+@app.delete("/api/llm/configs/{config_id}")
+async def delete_llm_config(config_id: UUID, user_id: UUID) -> dict[str, bool]:
+    if not await llm_registry.delete_config(config_id, user_id):
+        raise HTTPException(status_code=404, detail="Configuração não encontrada")
+    return {"deleted": True}
+
+
+@app.post("/api/llm/configs/{config_id}/test")
+async def test_llm_config(config_id: UUID, user_id: UUID) -> dict[str, Any]:
+    try:
+        target = await llm_registry.get_target_by_config(config_id, user_id)
+    except llm_registry.LLMError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not target:
+        raise HTTPException(status_code=404, detail="Configuração não encontrada")
+
+    recorder = MetricsRecorder(user_id=user_id, channel="config_test", persist_run=False)
+    started = time.perf_counter()
+    try:
+        model = llm_client.build_chat_model(target, "chat")
+        await model.ainvoke(
+            "Responda apenas: ok",
+            config={"callbacks": [LLMMetricsCallbackHandler(recorder)]},
+        )
+        ok, error = True, None
+    except Exception as exc:
+        ok, error = False, str(exc)[:300]
+    await recorder.flush()
+    return {
+        "ok": ok,
+        "latency_ms": int((time.perf_counter() - started) * 1000),
+        "error": error,
+    }
+
+
+@app.get("/api/metrics/llm/summary")
+async def llm_metrics_summary(
+    user_id: UUID | None = None, date_from: date | None = None, date_to: date | None = None
+) -> dict[str, Any]:
+    try:
+        return await metrics_service.get_summary(user_id, date_from, date_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/metrics/llm/daily")
+async def llm_metrics_daily(
+    user_id: UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    granularity: str = Query(default="day", pattern="^(day|week|month)$"),
+) -> dict[str, Any]:
+    try:
+        rows = await metrics_service.get_daily(user_id, date_from, date_to, granularity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"results": rows}
+
+
+@app.get("/api/metrics/llm/by-model")
+async def llm_metrics_by_model(
+    user_id: UUID | None = None, date_from: date | None = None, date_to: date | None = None
+) -> dict[str, Any]:
+    return {"results": await metrics_service.get_by_model(user_id, date_from, date_to)}
+
+
+@app.get("/api/metrics/llm/by-user")
+async def llm_metrics_by_user(
+    date_from: date | None = None, date_to: date | None = None
+) -> dict[str, Any]:
+    return {"results": await metrics_service.get_by_user(date_from, date_to)}
+
+
+@app.get("/api/metrics/llm/tools")
+async def llm_metrics_tools(
+    user_id: UUID | None = None, date_from: date | None = None, date_to: date | None = None
+) -> dict[str, Any]:
+    return {"results": await metrics_service.get_tools_usage(user_id, date_from, date_to)}
