@@ -237,3 +237,110 @@ LEFT JOIN institutions inst ON inst.id = mt.institution_id
 LEFT JOIN pluggy_accounts pa ON pa.pluggy_account_id = mt.pluggy_account_id
 WHERE mt.status = 'completo'
   AND mt.matched_pluggy_transaction_id IS NULL;
+
+
+-- ---------------------------------------------------------------------------
+-- LLM provider configs (fallback chain) and usage metrics
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS llm_provider_configs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(80) NOT NULL,
+    provider VARCHAR(30) NOT NULL,
+    base_url TEXT NOT NULL,
+    api_key_encrypted TEXT NOT NULL,
+    api_key_last4 VARCHAR(4) NOT NULL,
+    chat_model VARCHAR(120) NOT NULL,
+    vision_model VARCHAR(120),
+    transcription_model VARCHAR(120),
+    priority SMALLINT NOT NULL DEFAULT 1,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_configs_user_priority
+    ON llm_provider_configs (user_id, priority);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id UUID PRIMARY KEY,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    session_id UUID REFERENCES chat_sessions(id) ON DELETE SET NULL,
+    channel VARCHAR(30) NOT NULL,
+    input_type VARCHAR(20) NOT NULL DEFAULT 'text',
+    status VARCHAR(20) NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ NOT NULL,
+    latency_ms INTEGER NOT NULL,
+    llm_calls SMALLINT NOT NULL DEFAULT 0,
+    tool_calls SMALLINT NOT NULL DEFAULT 0,
+    tools_used TEXT[] NOT NULL DEFAULT '{}',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd NUMERIC(12, 6),
+    fallback_used BOOLEAN NOT NULL DEFAULT FALSE,
+    transaction_id UUID,
+    error_type VARCHAR(120),
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs (started_at);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_user_started ON agent_runs (user_id, started_at);
+
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    run_id UUID REFERENCES agent_runs(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    operation VARCHAR(20) NOT NULL,
+    provider VARCHAR(30),
+    model VARCHAR(120),
+    llm_config_id UUID,
+    attempt SMALLINT NOT NULL DEFAULT 1,
+    is_fallback BOOLEAN NOT NULL DEFAULT FALSE,
+    status VARCHAR(20) NOT NULL,
+    http_status SMALLINT,
+    error_type VARCHAR(120),
+    error_message TEXT,
+    latency_ms INTEGER NOT NULL,
+    time_to_first_token_ms INTEGER,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER,
+    cached_tokens INTEGER,
+    audio_seconds NUMERIC(8, 2),
+    finish_reason VARCHAR(30),
+    tool_calls_requested TEXT[] NOT NULL DEFAULT '{}',
+    estimated_cost_usd NUMERIC(12, 6),
+    metadata JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls (created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_user_created ON llm_calls (user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_model_created ON llm_calls (model, created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_run ON llm_calls (run_id);
+
+CREATE TABLE IF NOT EXISTS llm_model_pricing (
+    provider VARCHAR(30) NOT NULL,
+    model VARCHAR(120) NOT NULL,
+    input_per_million_usd NUMERIC(10, 4),
+    output_per_million_usd NUMERIC(10, 4),
+    cached_input_per_million_usd NUMERIC(10, 4),
+    audio_per_minute_usd NUMERIC(10, 6),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (provider, model)
+);
+
+-- Approximate public list prices (USD); edit as needed.
+INSERT INTO llm_model_pricing
+    (provider, model, input_per_million_usd, output_per_million_usd,
+     cached_input_per_million_usd, audio_per_minute_usd)
+VALUES
+    ('groq', 'llama-3.3-70b-versatile', 0.59, 0.79, NULL, NULL),
+    ('groq', 'meta-llama/llama-4-scout-17b-16e-instruct', 0.11, 0.34, NULL, NULL),
+    ('groq', 'whisper-large-v3-turbo', NULL, NULL, NULL, 0.000667),
+    ('openai', 'gpt-4o-mini', 0.15, 0.60, 0.075, NULL),
+    ('openai', 'whisper-1', NULL, NULL, NULL, 0.006)
+ON CONFLICT (provider, model) DO NOTHING;

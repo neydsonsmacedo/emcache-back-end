@@ -29,6 +29,19 @@ class Settings(BaseSettings):
     transcription_model: str = "whisper-1"
     vision_model: str = "gpt-4o-mini"
 
+    llm_fallback_provider: str = "openai"
+    llm_fallback_api_key: str = ""
+    llm_fallback_base_url: str = "https://api.openai.com/v1"
+    llm_fallback_model: str = "gpt-4o-mini"
+    llm_fallback_vision_model: str = "gpt-4o-mini"
+    llm_fallback_transcription_model: str = "whisper-1"
+    llm_request_timeout_seconds: float = 60.0
+    llm_keys_encryption_key: str = ""
+
+    elevenlabs_api_key: str = ""
+    elevenlabs_base_url: str = "https://api.elevenlabs.io/v1"
+    elevenlabs_transcription_model: str = "scribe_v1"
+
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""
 
