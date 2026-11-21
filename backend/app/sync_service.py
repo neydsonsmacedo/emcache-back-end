@@ -4,7 +4,7 @@ import time
 from collections import defaultdict
 from typing import Any
 
-from app import db
+from app import db, reconcile_service
 from app.pluggy_client import pluggy_client
 
 logger = logging.getLogger("emcache.sync")
@@ -35,6 +35,12 @@ async def sync_full_item(
     for acc in accounts:
         txs = await pluggy_client.list_all_transactions(acc["id"], date_from=date_from)
         total_transactions += await db.upsert_transactions(item_id, acc["id"], txs)
+
+    if user_id and total_transactions > 0:
+        try:
+            await reconcile_service.auto_reconcile_user(user_id)
+        except Exception:
+            logger.exception("Error running auto-reconciliation for user_id=%s", user_id)
 
     return {
         "item_id": item_id,
