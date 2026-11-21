@@ -1,13 +1,14 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Any
 from uuid import UUID
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app import db, sync_service
+from app import db, financial_service, reconcile_service, sync_service
 from app.pluggy_client import PluggyNotConfiguredError, pluggy_client
 
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +39,38 @@ class ConnectTokenRequest(BaseModel):
 
 class RegisterItemRequest(BaseModel):
     itemId: str
+
+
+class ManualTransactionCreateRequest(BaseModel):
+    user_id: UUID | None = None
+    data: date | None = None
+    valor_cents: int | None = Field(default=None, ge=0)
+    type: str = Field(default="DEBIT", pattern="^(DEBIT|CREDIT)$")
+    categoria: str | None = None
+    tipo_transacao: str | None = None
+    origem: str | None = None
+    institution_id: UUID | None = None
+    pluggy_account_id: str | None = None
+    resumo_item: str | None = None
+    canal_entrada: str = "api"
+    raw_input: str | None = None
+
+
+class ManualTransactionUpdateRequest(BaseModel):
+    data: date | None = None
+    valor_cents: int | None = Field(default=None, ge=0)
+    type: str | None = Field(default=None, pattern="^(DEBIT|CREDIT)$")
+    categoria: str | None = None
+    tipo_transacao: str | None = None
+    origem: str | None = None
+    institution_id: UUID | None = None
+    pluggy_account_id: str | None = None
+    resumo_item: str | None = None
+
+
+class ReconcileRequest(BaseModel):
+    pluggy_transaction_id: str
+    user_id: UUID | None = None
 
 
 @app.get("/health")
@@ -195,3 +228,266 @@ async def pluggy_webhook(
     """Respond quickly (<5s) and process Pluggy webhook in the background."""
     background_tasks.add_task(sync_service.handle_webhook_event, payload)
     return {"received": True}
+
+
+# ============================================================================
+# Analytics & Financial Services (Fase 2)
+# ============================================================================
+
+
+@app.get("/api/analytics/summary")
+async def get_analytics_summary(
+    user_id: UUID | None = None,
+    period: str | None = Query(default=None, pattern="^(day|week|month|custom)$"),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    institution_id: UUID | None = None,
+) -> dict[str, Any]:
+    try:
+        return await financial_service.get_analytics_summary(
+            user_id=user_id,
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+            institution_id=institution_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/analytics/by-category")
+async def get_analytics_by_category(
+    user_id: UUID | None = None,
+    type: str | None = Query(default="DEBIT", pattern="^(DEBIT|CREDIT)$"),
+    period: str | None = Query(default=None, pattern="^(day|week|month|custom)$"),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    institution_id: UUID | None = None,
+) -> dict[str, Any]:
+    try:
+        rows = await financial_service.get_spending_by_category(
+            user_id=user_id,
+            entry_type=type,
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+            institution_id=institution_id,
+        )
+        return {"results": rows}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/analytics/by-institution")
+async def get_analytics_by_institution(
+    user_id: UUID | None = None,
+    period: str | None = Query(default=None, pattern="^(day|week|month|custom)$"),
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict[str, Any]:
+    try:
+        rows = await financial_service.get_spending_by_institution(
+            user_id=user_id,
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return {"results": rows}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/analytics/cashflow")
+async def get_analytics_cashflow(
+    user_id: UUID | None = None,
+    granularity: str = Query(default="day", pattern="^(day|week|month)$"),
+    period: str | None = Query(default=None, pattern="^(day|week|month|custom)$"),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    institution_id: UUID | None = None,
+) -> dict[str, Any]:
+    try:
+        rows = await financial_service.get_cashflow(
+            user_id=user_id,
+            granularity=granularity,
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+            institution_id=institution_id,
+        )
+        return {"results": rows}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ============================================================================
+# Manual Transactions CRUD (Fase 2)
+# ============================================================================
+
+
+@app.get("/api/manual-transactions")
+async def list_manual_transactions(
+    user_id: UUID | None = None,
+    status: str | None = Query(default=None, pattern="^(completo|pendente)$"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    rows = await financial_service.list_manual_transactions(
+        user_id=user_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return {"results": rows}
+
+
+@app.post("/api/manual-transactions", status_code=201)
+async def create_manual_transaction(
+    body: ManualTransactionCreateRequest,
+) -> dict[str, Any]:
+    try:
+        return await financial_service.create_manual_transaction(
+            user_id=body.user_id,
+            data=body.data,
+            valor_cents=body.valor_cents,
+            entry_type=body.type,
+            categoria=body.categoria,
+            tipo_transacao=body.tipo_transacao,
+            origem=body.origem,
+            institution_id=body.institution_id,
+            pluggy_account_id=body.pluggy_account_id,
+            resumo_item=body.resumo_item,
+            canal_entrada=body.canal_entrada,
+            raw_input=body.raw_input,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/manual-transactions/{transaction_id}")
+async def get_manual_transaction(
+    transaction_id: UUID,
+    user_id: UUID | None = None,
+) -> dict[str, Any]:
+    row = await financial_service.get_manual_transaction(
+        transaction_id,
+        user_id=user_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Transação manual não encontrada")
+    return row
+
+
+@app.patch("/api/manual-transactions/{transaction_id}")
+async def update_manual_transaction(
+    transaction_id: UUID,
+    body: ManualTransactionUpdateRequest,
+    user_id: UUID | None = None,
+) -> dict[str, Any]:
+    fields = body.model_dump(exclude_unset=True)
+    kwargs: dict[str, Any] = {}
+    field_map = {
+        "data": "data",
+        "valor_cents": "valor_cents",
+        "type": "entry_type",
+        "categoria": "categoria",
+        "tipo_transacao": "tipo_transacao",
+        "origem": "origem",
+        "institution_id": "institution_id",
+        "pluggy_account_id": "pluggy_account_id",
+        "resumo_item": "resumo_item",
+    }
+    for key, val in fields.items():
+        kwargs[field_map[key]] = val
+
+    try:
+        row = await financial_service.update_manual_transaction(
+            transaction_id,
+            user_id=user_id,
+            **kwargs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Transação manual não encontrada")
+    return row
+
+
+@app.delete("/api/manual-transactions/{transaction_id}")
+async def delete_manual_transaction(
+    transaction_id: UUID,
+    user_id: UUID | None = None,
+) -> dict[str, bool]:
+    deleted = await financial_service.delete_manual_transaction(
+        transaction_id,
+        user_id=user_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Transação manual não encontrada")
+    return {"deleted": True}
+
+
+# ============================================================================
+# Reconciliation (Fase 2)
+# ============================================================================
+
+
+@app.get("/api/reconciliation/suggestions")
+async def get_reconciliation_suggestions(
+    user_id: UUID,
+    manual_transaction_id: UUID | None = None,
+    date_window_days: int = Query(default=3, ge=0, le=30),
+) -> dict[str, Any]:
+    results = await reconcile_service.find_reconciliation_candidates(
+        user_id,
+        manual_transaction_id=manual_transaction_id,
+        date_window_days=date_window_days,
+    )
+    return {"results": results}
+
+
+@app.post("/api/reconciliation/auto")
+async def run_auto_reconciliation(
+    user_id: UUID,
+    date_window_days: int = Query(default=3, ge=0, le=30),
+    min_score: float = Query(default=0.75, ge=0.5, le=1.0),
+) -> dict[str, Any]:
+    return await reconcile_service.auto_reconcile_user(
+        user_id,
+        date_window_days=date_window_days,
+        min_score=min_score,
+    )
+
+
+@app.post("/api/manual-transactions/{transaction_id}/reconcile")
+async def reconcile_manual_transaction(
+    transaction_id: UUID,
+    body: ReconcileRequest,
+) -> dict[str, Any]:
+    try:
+        return await reconcile_service.reconcile_manual_transaction(
+            transaction_id,
+            body.pluggy_transaction_id,
+            user_id=body.user_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/manual-transactions/{transaction_id}/reconcile")
+async def unreconcile_manual_transaction(
+    transaction_id: UUID,
+    user_id: UUID | None = None,
+) -> dict[str, Any]:
+    row = await reconcile_service.unreconcile_manual_transaction(
+        transaction_id,
+        user_id=user_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Transação manual não encontrada")
+    return row
